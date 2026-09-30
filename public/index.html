@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AION 2 Israel Community Bot v4</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#1a2742 0,#0b101a 36%,#06080e 100%);color:#f7f8fb;display:grid;place-items:center;padding:24px}
+.card{width:min(900px,100%);background:rgba(14,20,33,.96);border:1px solid #2c3950;border-radius:22px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.42)}
+.hero{padding:28px;border-bottom:1px solid #27344a}
+h1{margin:0 0 8px;font-size:30px}.muted{color:#a8b4c8;line-height:1.55}.content{padding:28px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+label{display:block;margin-bottom:7px;font-weight:800}
+input{width:100%;padding:13px 14px;border-radius:11px;border:1px solid #35445f;background:#090f1a;color:#fff;outline:none}
+input:focus{border-color:#6c7cff}.check{display:flex;gap:10px;align-items:center;margin:20px 0;color:#d7deea}
+button{width:100%;padding:14px;border:0;border-radius:12px;background:#5865f2;color:white;font-size:16px;font-weight:900;cursor:pointer}
+button:disabled{opacity:.55;cursor:wait}.log{margin-top:22px;background:#06090f;border:1px solid #27344a;border-radius:12px;padding:15px;min-height:140px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#cbd6e7}
+.features{margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}@media(max-width:700px){.features{grid-template-columns:1fr}}
+.feature{background:#0a111d;border:1px solid #27344a;border-radius:12px;padding:12px;color:#c8d4e7;font-size:14px}.ok{color:#7ee787}.err{color:#ff7b72}
+</style>
+</head>
+<body>
+<main class="card">
+<section class="hero">
+  <h1>⚔️ AION 2 Israel Community Bot v4</h1>
+  <div class="muted">Automatic news, forum posting, off-topic comfort settings, and the v3 community features.</div>
+</section>
+<section class="content">
+  <div class="grid">
+    <div>
+      <label for="token">Discord Bot Token</label>
+      <input id="token" type="password" autocomplete="off">
+    </div>
+    <div>
+      <label for="guild">Discord Server ID</label>
+      <input id="guild" autocomplete="off">
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:18px">
+    <div>
+      <label for="client">Discord Application / Client ID</label>
+      <input id="client" autocomplete="off">
+    </div>
+    <div>
+      <label for="newsMinutes">News check interval (minutes)</label>
+      <input id="newsMinutes" type="number" min="5" value="30">
+    </div>
+  </div>
+
+  <label class="check">
+    <input id="upgrade" type="checkbox" checked style="width:auto">
+    Apply server upgrade settings on start
+  </label>
+
+  <button id="start">Upgrade & Start Community Bot</button>
+
+  <div class="features">
+    <div class="feature">📰 Auto-post official NCSoft AION 2 news</div>
+    <div class="feature">📚 /build creates forum posts</div>
+    <div class="feature">❓ /question creates help posts</div>
+    <div class="feature">💬 Off-topic topic + 3s slowmode</div>
+    <div class="feature">🎵 Music / Soundboard setup</div>
+    <div class="feature">🚨 Reports, events, logs, LFG and welcome buttons</div>
+  </div>
+
+  <div id="log" class="log">Ready.</div>
+</section>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+$('start').addEventListener('click',async()=>{
+  const token=$('token').value.trim();
+  const guildId=$('guild').value.trim();
+  const clientId=$('client').value.trim();
+  const newsMinutes=Number($('newsMinutes').value)||30;
+
+  if(!token||!guildId||!clientId){
+    $('log').className='log err';
+    $('log').textContent='Bot Token, Server ID and Application / Client ID are required.';
+    return;
+  }
+
+  $('start').disabled=true;
+  $('log').className='log';
+  $('log').textContent='Connecting to Discord and applying v4...';
+
+  try{
+    const r=await fetch('/api/start',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        token,guildId,clientId,newsMinutes,
+        runUpgrade:$('upgrade').checked
+      })
+    });
+    const data=await r.json();
+    $('log').className=data.ok?'log ok':'log err';
+    $('log').textContent=(data.ok?'✅ ':'❌ ')+data.message+
+      (data.ok?'\n\nCommands: /help /server /rules /voice /lfg /event /report /news /build /question /ping':'');
+  }catch(e){
+    $('log').className='log err';
+    $('log').textContent='❌ '+e.message;
+  }finally{
+    $('start').disabled=false;
+  }
+});
+</script>
+</body>
+</html>
