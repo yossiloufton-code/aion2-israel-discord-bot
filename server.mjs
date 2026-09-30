@@ -25,7 +25,6 @@ const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const PORT = Number(process.env.PORT || 3000);
 const NEWS_MINUTES = Math.max(5, Number(process.env.NEWS_MINUTES || 30));
-const RUN_UPGRADE = (process.env.RUN_UPGRADE ?? 'true').toLowerCase() === 'true';
 const DATA_DIR = process.env.DATA_DIR || './data';
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
@@ -35,15 +34,15 @@ if (!TOKEN || !GUILD_ID || !CLIENT_ID) {
 }
 
 const app = express();
-
 let clientReady = false;
 let botTag = null;
 let guildName = null;
 let newsTimer = null;
+const startedAt = Date.now();
 
 app.get('/', (_req, res) => {
   res.type('html').send(`
-    <h1>AION 2 Israel Community Bot</h1>
+    <h1>AION 2 Israel Community Bot v6</h1>
     <p>Status: ${clientReady ? 'online' : 'starting'}</p>
     <p>Bot: ${botTag ?? '-'}</p>
     <p>Guild: ${guildName ?? '-'}</p>
@@ -51,9 +50,7 @@ app.get('/', (_req, res) => {
 });
 
 app.get('/health', (_req, res) => {
-  if (!clientReady) {
-    return res.status(503).json({ ok: false, status: 'starting' });
-  }
+  if (!clientReady) return res.status(503).json({ ok: false, status: 'starting' });
   res.json({ ok: true, status: 'online', bot: botTag, guild: guildName });
 });
 
@@ -64,9 +61,18 @@ app.listen(PORT, '0.0.0.0', () => {
 const commands = [
   new SlashCommandBuilder().setName('help').setDescription('Show AION 2 Israel bot commands'),
   new SlashCommandBuilder().setName('server').setDescription('Show official community server information'),
+  new SlashCommandBuilder().setName('status').setDescription('Show bot/community status'),
   new SlashCommandBuilder().setName('rules').setDescription('Show the community rules channel'),
   new SlashCommandBuilder().setName('ping').setDescription('Check whether the community bot is online'),
   new SlashCommandBuilder().setName('voice').setDescription('Show community voice channels'),
+
+  new SlashCommandBuilder()
+    .setName('setserver')
+    .setDescription('Staff: set the official AION 2 community server')
+    .addStringOption(o => o.setName('server').setDescription('Exact server name').setRequired(true))
+    .addStringOption(o => o.setName('faction').setDescription('Asmodian / Elyos').setRequired(false))
+    .addStringOption(o => o.setName('region').setDescription('Europe / NA / etc.').setRequired(false)),
+
   new SlashCommandBuilder()
     .setName('lfg')
     .setDescription('Post a formatted Looking For Group message')
@@ -76,14 +82,17 @@ const commands = [
     .addStringOption(o => o.setName('faction').setDescription('Asmodian / Elyos').setRequired(true))
     .addStringOption(o => o.setName('voice').setDescription('Yes / No').setRequired(false))
     .addStringOption(o => o.setName('time').setDescription('Now / 20:00 / etc.').setRequired(false)),
+
   new SlashCommandBuilder()
     .setName('event')
     .setDescription('Create a formatted community event post')
     .addStringOption(o => o.setName('title').setDescription('Event title').setRequired(true))
     .addStringOption(o => o.setName('when').setDescription('When it happens').setRequired(true))
     .addStringOption(o => o.setName('details').setDescription('Event details').setRequired(true)),
+
   new SlashCommandBuilder().setName('report').setDescription('Privately report a member or issue to staff'),
   new SlashCommandBuilder().setName('news').setDescription('Check official NCSoft AION 2 news now'),
+
   new SlashCommandBuilder()
     .setName('build')
     .setDescription('Create a structured build post in the builds forum')
@@ -94,6 +103,7 @@ const commands = [
     .addStringOption(o => o.setName('gear').setDescription('Gear notes').setRequired(false))
     .addStringOption(o => o.setName('skills').setDescription('Skills / rotation').setRequired(false))
     .addStringOption(o => o.setName('notes').setDescription('Extra notes').setRequired(false)),
+
   new SlashCommandBuilder()
     .setName('question')
     .setDescription('Create a structured help post in the questions forum')
@@ -104,10 +114,17 @@ const commands = [
 
 const cfg = {
   channels: {
-    welcome: 'welcome', rules: 'rules', serverInfo: 'server-info',
-    generalHe: 'general-עברית', lfg: 'looking-for-group',
-    builds: 'builds-and-classes', questions: 'questions-help',
-    aionNews: 'aion-news', modLog: 'mod-log', reports: 'reports',
+    welcome: 'welcome',
+    rules: 'rules',
+    serverInfo: 'server-info',
+    botCommands: 'bot-commands',
+    generalHe: 'general-עברית',
+    lfg: 'looking-for-group',
+    builds: 'builds-and-classes',
+    questions: 'questions-help',
+    aionNews: 'aion-news',
+    modLog: 'mod-log',
+    reports: 'reports',
     eventInfo: 'event-info'
   }
 };
@@ -119,9 +136,22 @@ function ch(guild, name) {
 async function loadState() {
   await fs.mkdir(DATA_DIR, { recursive: true });
   try {
-    return JSON.parse(await fs.readFile(STATE_FILE, 'utf8'));
+    const state = JSON.parse(await fs.readFile(STATE_FILE, 'utf8'));
+    return {
+      seenNews: state.seenNews || [],
+      lastNewsCheck: state.lastNewsCheck || null,
+      server: state.server || 'TO BE CONFIRMED',
+      faction: state.faction || 'Asmodian',
+      region: state.region || 'Europe'
+    };
   } catch {
-    return { seenNews: [], lastNewsCheck: null };
+    return {
+      seenNews: [],
+      lastNewsCheck: null,
+      server: 'TO BE CONFIRMED',
+      faction: 'Asmodian',
+      region: 'Europe'
+    };
   }
 }
 
@@ -132,10 +162,7 @@ async function saveState(state) {
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
-  await rest.put(
-    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-    { body: commands }
-  );
+  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
   console.log(`[commands] registered ${commands.length} guild commands`);
 }
 
@@ -151,6 +178,113 @@ async function sendLog(guild, title, description) {
   }
 }
 
+async function ensureBotCommandsPanel(client, guild) {
+  const channel = ch(guild, cfg.channels.botCommands);
+  if (!channel?.isTextBased()) return;
+
+  const marker = 'AION2-IL-BOT-COMMANDS-v6';
+  let existing;
+  try {
+    const msgs = await channel.messages.fetch({ limit: 50 });
+    existing = msgs.find(m => m.author.id === client.user.id && m.content.includes(marker));
+  } catch {}
+
+  const embed = new EmbedBuilder()
+    .setTitle('🤖 AION 2 Israel Community Bot')
+    .setDescription(
+`Use these commands anywhere in the server:
+
+**/server** — official region, faction and selected server
+**/status** — bot/community status
+**/rules** — links to the community rules
+**/voice** — lists available voice channels
+**/lfg** — creates a formatted Looking For Group post
+**/build** — creates a structured post in #builds-and-classes
+**/question** — creates a structured post in #questions-help
+**/news** — checks official AION 2 news
+**/report** — privately reports an issue to staff
+**/event** — staff-only community event post
+**/setserver** — staff-only server selection update
+**/ping** — checks if the bot is online
+
+**Quick tips**
+• Use **/lfg** when looking for a group.
+• Use **/build** for clean build posts.
+• Use **/question** for help topics.
+• Use **/report** instead of arguing publicly.
+• Use **/help** at any time.`
+    );
+
+  const payload = {
+    content: `||${marker}||`,
+    embeds: [embed]
+  };
+
+  if (existing) {
+    await existing.edit(payload);
+  } else {
+    const msg = await channel.send(payload);
+    try { await msg.pin(); } catch {}
+  }
+}
+
+async function ensureWelcomeHint(client, guild) {
+  const channel = ch(guild, cfg.channels.welcome);
+  if (!channel?.isTextBased()) return;
+
+  const marker = 'AION2-IL-WELCOME-HINT-v6';
+  let existing;
+  try {
+    const msgs = await channel.messages.fetch({ limit: 50 });
+    existing = msgs.find(m => m.author.id === client.user.id && m.content.includes(marker));
+  } catch {}
+
+  const payload = {
+    content: `||${marker}||\n🤖 Need help? Check **#bot-commands** or use **/help**.`
+  };
+
+  if (existing) await existing.edit(payload);
+  else {
+    const msg = await channel.send(payload);
+    try { await msg.pin(); } catch {}
+  }
+}
+
+async function updateServerInfoPanel(client, guild) {
+  const channel = ch(guild, cfg.channels.serverInfo);
+  if (!channel?.isTextBased()) return;
+
+  const state = await loadState();
+  const marker = 'AION2-IL-SERVER-INFO-v6';
+  let existing;
+  try {
+    const msgs = await channel.messages.fetch({ limit: 50 });
+    existing = msgs.find(m => m.author.id === client.user.id && m.content.includes(marker));
+  } catch {}
+
+  const embed = new EmbedBuilder()
+    .setTitle('🌍 AION 2 Israel — Official Server Info')
+    .setDescription(
+`🌍 **Region:** ${state.region}
+🌑 **Faction:** ${state.faction}
+🖥️ **Server:** ${state.server}
+
+⚠️ לפני יצירת הדמות הראשית, בדקו תמיד את הערוץ הזה כדי לוודא שאתם בוחרים את השרת הנכון.`
+    )
+    .setTimestamp();
+
+  const payload = {
+    content: `||${marker}||`,
+    embeds: [embed]
+  };
+
+  if (existing) await existing.edit(payload);
+  else {
+    const msg = await channel.send(payload);
+    try { await msg.pin(); } catch {}
+  }
+}
+
 function decodeHtml(s) {
   return s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
 }
@@ -163,7 +297,7 @@ async function fetchOfficialAionNews() {
   const url = 'https://about.ncsoft.com/en/news/all';
   const res = await fetch(url, {
     headers: {
-      'User-Agent': 'AION2-Israel-Community-Bot/5.0',
+      'User-Agent': 'AION2-Israel-Community-Bot/6.0',
       'Accept': 'text/html,application/xhtml+xml'
     }
   });
@@ -178,7 +312,6 @@ async function fetchOfficialAionNews() {
     const href = m[1].startsWith('http') ? m[1] : `https://about.ncsoft.com${m[1]}`;
     const text = stripTags(m[2]);
     if (!/AION\s*2/i.test(text)) continue;
-
     const title = text.trim().slice(0, 240) || 'AION 2 News';
     if (!results.some(x => x.url === href)) results.push({ title, url: href });
   }
@@ -309,6 +442,9 @@ client.once(Events.ClientReady, async ready => {
     await guild.roles.fetch();
 
     await registerCommands();
+    await ensureBotCommandsPanel(client, guild);
+    await ensureWelcomeHint(client, guild);
+    await updateServerInfoPanel(client, guild);
 
     botTag = ready.user.tag;
     guildName = guild.name;
@@ -327,6 +463,7 @@ client.once(Events.ClientReady, async ready => {
 client.on(Events.GuildMemberAdd, async member => {
   if (member.guild.id !== GUILD_ID) return;
   const welcome = ch(member.guild, cfg.channels.welcome);
+
   if (welcome?.isTextBased()) {
     try {
       await welcome.send({
@@ -334,11 +471,12 @@ client.on(Events.GuildMemberAdd, async member => {
         embeds: [
           new EmbedBuilder()
             .setTitle(`👋 ברוך הבא ${member.user.username}!`)
-            .setDescription(`📜 קרא את **#rules**\n🌍 בדוק את **#server-info**\n💬 תגיד שלום ב-**#general-עברית**\n\nנתראה באטרייה ⚔️`)
+            .setDescription(`📜 קרא את **#rules**\n🌍 בדוק את **#server-info**\n🤖 בדוק את **#bot-commands**\n💬 תגיד שלום ב-**#general-עברית**\n\nנתראה באטרייה ⚔️`)
         ]
       });
     } catch {}
   }
+
   await sendLog(member.guild, '➕ Member Joined', `${member.user.tag} (${member.id}) joined.`);
 });
 
@@ -368,8 +506,12 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.commandName === 'help') {
       return await interaction.reply({
         ephemeral: true,
-        embeds: [new EmbedBuilder().setTitle('⚔️ AION 2 Israel Bot Help').setDescription(
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('⚔️ AION 2 Israel Bot Help')
+            .setDescription(
 `/server — server information
+/status — bot/community status
 /rules — rules channel
 /voice — voice channels
 /lfg — Looking For Group
@@ -378,13 +520,72 @@ client.on(Events.InteractionCreate, async interaction => {
 /news — refresh official AION 2 news
 /event — staff event
 /report — private staff report
-/ping — bot status`)]
+/setserver — staff: update official server
+/ping — bot status`
+            )
+        ]
+      });
+    }
+
+    if (interaction.commandName === 'status') {
+      const state = await loadState();
+      const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
+      const hours = Math.floor(uptimeSec / 3600);
+      const minutes = Math.floor((uptimeSec % 3600) / 60);
+
+      return await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('📊 AION 2 Israel Status')
+            .addFields(
+              { name: 'Bot', value: clientReady ? '🟢 Online' : '🟡 Starting', inline: true },
+              { name: 'Uptime', value: `${hours}h ${minutes}m`, inline: true },
+              { name: 'Members', value: `${interaction.guild.memberCount}`, inline: true },
+              { name: 'Region', value: state.region, inline: true },
+              { name: 'Faction', value: state.faction, inline: true },
+              { name: 'Server', value: state.server, inline: true },
+              { name: 'Last news sync', value: state.lastNewsCheck || 'Not yet', inline: false }
+            )
+            .setTimestamp()
+        ]
       });
     }
 
     if (interaction.commandName === 'server') {
+      const state = await loadState();
       return await interaction.reply({
-        embeds: [new EmbedBuilder().setTitle('🌍 AION 2 Israel').setDescription('🇪🇺 **Region:** Europe\n🌑 **Main faction:** Asmodian\n🖥️ Check **#server-info** for the exact server.')]
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('🌍 AION 2 Israel — Official Server Info')
+            .setDescription(`🌍 **Region:** ${state.region}\n🌑 **Faction:** ${state.faction}\n🖥️ **Server:** ${state.server}`)
+        ]
+      });
+    }
+
+    if (interaction.commandName === 'setserver') {
+      const allowed = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+        || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+
+      if (!allowed) {
+        return await interaction.reply({ content: '❌ Staff only.', ephemeral: true });
+      }
+
+      const state = await loadState();
+      state.server = interaction.options.getString('server');
+      state.faction = interaction.options.getString('faction') || state.faction;
+      state.region = interaction.options.getString('region') || state.region;
+      await saveState(state);
+      await updateServerInfoPanel(client, interaction.guild);
+
+      await sendLog(
+        interaction.guild,
+        '🖥️ Community Server Updated',
+        `${interaction.user.tag} set server to **${state.server}**, faction **${state.faction}**, region **${state.region}**.`
+      );
+
+      return await interaction.reply({
+        content: `✅ Updated community server to **${state.server}** (${state.region}, ${state.faction}).`,
+        ephemeral: true
       });
     }
 
@@ -397,7 +598,11 @@ client.on(Events.InteractionCreate, async interaction => {
       const list = interaction.guild.channels.cache
         .filter(c => c.type === ChannelType.GuildVoice && c.name !== 'AFK')
         .map(c => `<#${c.id}>`).slice(0, 12).join('\n');
-      return await interaction.reply({ content: `🎧 **Voice channels**\n${list || 'None found.'}`, ephemeral: true });
+
+      return await interaction.reply({
+        content: `🎧 **Voice channels**\n${list || 'None found.'}`,
+        ephemeral: true
+      });
     }
 
     if (interaction.commandName === 'news') {
@@ -434,6 +639,7 @@ client.on(Events.InteractionCreate, async interaction => {
         await target.send({ embeds: [embed] });
         return await interaction.reply({ content: `✅ Posted in <#${target.id}>`, ephemeral: true });
       }
+
       return await interaction.reply({ embeds: [embed] });
     }
 
@@ -448,21 +654,45 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!target?.isTextBased()) return await interaction.reply({ content: 'event-info channel not found.', ephemeral: true });
 
       await target.send({
-        embeds: [new EmbedBuilder().setTitle(`🎉 ${interaction.options.getString('title')}`).addFields(
-          { name: 'When', value: interaction.options.getString('when') },
-          { name: 'Details', value: interaction.options.getString('details') },
-          { name: 'Created by', value: `${interaction.user}` }
-        ).setTimestamp()]
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(`🎉 ${interaction.options.getString('title')}`)
+            .addFields(
+              { name: 'When', value: interaction.options.getString('when') },
+              { name: 'Details', value: interaction.options.getString('details') },
+              { name: 'Created by', value: `${interaction.user}` }
+            )
+            .setTimestamp()
+        ]
       });
 
       return await interaction.reply({ content: `✅ Event posted in <#${target.id}>`, ephemeral: true });
     }
 
     if (interaction.commandName === 'report') {
-      const modal = new ModalBuilder().setCustomId('a2_report_modal').setTitle('Report to AION 2 Israel Staff');
-      const subject = new TextInputBuilder().setCustomId('report_subject').setLabel('Who / what are you reporting?').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(120);
-      const details = new TextInputBuilder().setCustomId('report_details').setLabel('What happened?').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);
-      modal.addComponents(new ActionRowBuilder().addComponents(subject), new ActionRowBuilder().addComponents(details));
+      const modal = new ModalBuilder()
+        .setCustomId('a2_report_modal')
+        .setTitle('Report to AION 2 Israel Staff');
+
+      const subject = new TextInputBuilder()
+        .setCustomId('report_subject')
+        .setLabel('Who / what are you reporting?')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(120);
+
+      const details = new TextInputBuilder()
+        .setCustomId('report_details')
+        .setLabel('What happened?')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(1000);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(subject),
+        new ActionRowBuilder().addComponents(details)
+      );
+
       return await interaction.showModal(modal);
     }
   } catch (err) {
@@ -477,16 +707,23 @@ client.on(Events.InteractionCreate, async interaction => {
 
 client.on(Events.InteractionCreate, async interaction => {
   if (interaction.guildId !== GUILD_ID || !interaction.isModalSubmit() || interaction.customId !== 'a2_report_modal') return;
+
   const target = ch(interaction.guild, cfg.channels.reports);
   if (target?.isTextBased()) {
     await target.send({
-      embeds: [new EmbedBuilder().setTitle('🚨 New Community Report').addFields(
-        { name: 'Reporter', value: `${interaction.user} (${interaction.user.id})` },
-        { name: 'Subject', value: interaction.fields.getTextInputValue('report_subject').slice(0,1024) },
-        { name: 'Details', value: interaction.fields.getTextInputValue('report_details').slice(0,1024) }
-      ).setTimestamp()]
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('🚨 New Community Report')
+          .addFields(
+            { name: 'Reporter', value: `${interaction.user} (${interaction.user.id})` },
+            { name: 'Subject', value: interaction.fields.getTextInputValue('report_subject').slice(0,1024) },
+            { name: 'Details', value: interaction.fields.getTextInputValue('report_details').slice(0,1024) }
+          )
+          .setTimestamp()
+      ]
     });
   }
+
   await interaction.reply({ content: '✅ Your report was sent privately to staff.', ephemeral: true });
 });
 
